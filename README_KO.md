@@ -7,9 +7,12 @@
 
 | 도구 | 감사 대상 | 질문 |
 |---|---|---|
-| [measure-mirror](https://github.com/bhyi4/measure-mirror) | AI 평가 주장 | **주장**이 정직한가? |
-| provenance-mirror | 콘텐츠 진위 | **출처**가 증명되나? |
-| **action-mirror** | 에이전트 행동 | **누가 뭘 했나, 증명 가능하게?** |
+| 🪞 [measure-mirror](https://github.com/bhyi4/measure-mirror) | AI 평가 주장 | **주장**이 정직한가? |
+| 🔎 [provenance-mirror](https://github.com/bhyi4/provenance-mirror) | 콘텐츠 진위 | **출처**가 증명되나? |
+| 🪪 **action-mirror** (현재 위치) | 에이전트 행동 | **누가 뭘 했나, 증명 가능하게?** |
+| 👁 [mirror-witness](https://github.com/bhyi4/mirror-witness) | 운영자 간 증인 게시판 | 또 **누가 증인** 섰나? |
+
+넷을 합치면 = 🪞🔎🪪 [미러스택](https://github.com/bhyi4/measure-mirror/tree/main/stack).
 
 > 훈련 불요 · 결정론적 · 외부 의존성 없음 (Python 3.10+ stdlib만).
 

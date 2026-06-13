@@ -7,9 +7,12 @@ Third member of the mirror family — same DNA, new domain:
 
 | Tool | Audits | Question |
 |---|---|---|
-| [measure-mirror](https://github.com/bhyi4/measure-mirror) | AI evaluation claims | Is the **claim** honest? |
-| provenance-mirror | Content authenticity | Is the **origin** proven? |
-| **action-mirror** | Agent behaviour | **Who did what, provably?** |
+| 🪞 [measure-mirror](https://github.com/bhyi4/measure-mirror) | AI evaluation claims | Is the **claim** honest? |
+| 🔎 [provenance-mirror](https://github.com/bhyi4/provenance-mirror) | Content authenticity | Is the **origin** proven? |
+| 🪪 **action-mirror** (you are here) | Agent behaviour | **Who did what, provably?** |
+| 👁 [mirror-witness](https://github.com/bhyi4/mirror-witness) | Cross-operator witness board | Who else **witnessed** it? |
+
+The four together = the 🪞🔎🪪 [Mirror Stack](https://github.com/bhyi4/measure-mirror/tree/main/stack).
 
 > Zero training · Deterministic · Zero dependencies (Python 3.10+ stdlib only).
 
