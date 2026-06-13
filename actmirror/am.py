@@ -78,11 +78,16 @@ def _get_last_seal(ledger_path: str) -> str:
     return "GENESIS"
 
 
-def _seal(ledger_path: str, entry: dict) -> dict:
+def _seal(ledger_path: str, entry: dict, sign_key: str | None = None) -> dict:
     entry["prev_seal"] = _get_last_seal(ledger_path)
+    # `seal` and `sig` are attestation fields, excluded from the content hash.
+    body = {k: v for k, v in entry.items() if k not in ("seal", "sig")}
     entry["seal"] = hashlib.sha256(
-        json.dumps(entry, sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(body, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()[:16]
+    if sign_key is not None:
+        from . import identity
+        entry["sig"] = identity.sign(sign_key, entry["seal"])
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return entry
@@ -107,7 +112,7 @@ def verify_chain(ledger_path: str) -> list[Finding]:
             return [Finding("⛓ chain", "FAIL",
                             f"Entry {i}: prev_seal broken — "
                             "deletion/insertion/reorder detected.")]
-        body = {k: v for k, v in e.items() if k != "seal"}
+        body = {k: v for k, v in e.items() if k not in ("seal", "sig")}
         expect = hashlib.sha256(
             json.dumps(body, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()[:16]
@@ -119,12 +124,47 @@ def verify_chain(ledger_path: str) -> list[Finding]:
                     f"Chain intact — {len(entries)} entries verified.")]
 
 
+def verify_signatures(ledger_path: str) -> list[Finding]:
+    """Verify the cryptographic identity layer: every entry that carries a pubkey must have a
+    valid signature of its seal under that key. Entries without a pubkey are unsigned (OK —
+    the 'who' is self-asserted, see README). Requires the [signing] extra to check signatures."""
+    from . import identity
+    entries = _load_entries(ledger_path)
+    signed = [e for e in entries if e.get("pubkey")]
+    if not signed:
+        return [Finding("🔑 identity", "OK",
+                        "No signed entries — 'who' is self-asserted (unsigned).")]
+    if not identity.available():
+        return [Finding("🔑 identity", "WARN",
+                        f"{len(signed)} signed entries present but cryptography not installed — "
+                        "pip install action-mirror[signing] to verify.")]
+    bad = []
+    for i, e in enumerate(entries, 1):
+        if not e.get("pubkey"):
+            continue
+        # recompute the seal from content so a tampered body is caught here too, not only by
+        # verify_chain — the signature must vouch for the ACTUAL content, not a stale seal.
+        body = {k: v for k, v in e.items() if k not in ("seal", "sig")}
+        real_seal = hashlib.sha256(
+            json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        if not e.get("sig") or not identity.verify(e["pubkey"], real_seal, e["sig"]):
+            bad.append(i)
+    if bad:
+        return [Finding("🔑 identity", "FAIL",
+                        f"Invalid/forged signature at entr{'y' if len(bad)==1 else 'ies'} {bad} "
+                        "— signed 'who' does not verify.")]
+    keys = {e["pubkey"][:12] for e in signed}
+    return [Finding("🔑 identity", "OK",
+                    f"{len(signed)} signed entries verified across {len(keys)} key(s). "
+                    "(Attribution proven; independence is NOT — one operator may hold many keys.)")]
+
+
 # ─────────────────────────────────────────────────────────────
 # A. Action provenance
 # ─────────────────────────────────────────────────────────────
 def record(ledger_path: str, *, agent: str, action: str,
            target: str | None = None, payload: dict | None = None,
-           content=None) -> dict:
+           content=None, sign_key: str | None = None) -> dict:
     """Record one agent action as a chain-sealed ledger entry.
 
     Args:
@@ -135,6 +175,9 @@ def record(ledger_path: str, *, agent: str, action: str,
         payload: small JSON-serializable metadata (args summary, exit code...)
         content: bytes/str of the produced artifact — only its SHA-256 is
                  stored (privacy + size), enabling later attest(content=...).
+        sign_key: optional path to an Ed25519 private key ([signing] extra). When given, the
+                 entry carries a `pubkey` (chained) and a `sig` over its seal — upgrading the
+                 self-asserted `agent` to a verifiable identity. See identity.py for honest scope.
     """
     entry: dict = {
         "_type":  "action",
@@ -148,7 +191,10 @@ def record(ledger_path: str, *, agent: str, action: str,
         entry["content_hash"] = _content_hash(content)
     if payload is not None:
         entry["payload"] = payload
-    return _seal(ledger_path, entry)
+    if sign_key is not None:
+        from . import identity
+        entry["pubkey"] = identity.public_hex(sign_key)   # chained: claimed key can't be swapped
+    return _seal(ledger_path, entry, sign_key=sign_key)
 
 
 def history(ledger_path: str, *, agent: str | None = None,
@@ -340,6 +386,13 @@ def _cli() -> None:
     r.add_argument("--payload", default=None, help="JSON string of metadata")
     r.add_argument("--content-file", default=None,
                    help="File whose SHA-256 to seal as content_hash")
+    r.add_argument("--sign", default=None, metavar="KEYFILE",
+                   help="Sign the entry with this Ed25519 private key ([signing] extra)")
+
+    kg = sub.add_parser("keygen", help="Generate an Ed25519 identity keypair ([signing] extra)")
+    kg.add_argument("--out", required=True, help="Path to write the private key")
+
+    sub.add_parser("verify-sig", help="Verify the signed-identity layer of my ledger")
 
     h = sub.add_parser("history", help="Query sealed actions")
     h.add_argument("--agent", default=None)
@@ -369,6 +422,15 @@ def _cli() -> None:
     cr.add_argument("--names", nargs=2, required=True, metavar=("NAME_A", "NAME_B"))
 
     args = p.parse_args()
+    if args.cmd == "keygen":
+        from . import identity
+        pub = identity.generate(args.out)
+        print(f"🔑 keypair written: {args.out}  (keep private!)\n   pubkey: {pub}")
+        return
+    if args.cmd == "verify-sig":
+        for f in verify_signatures(args.ledger):
+            print(f"   {f}")
+        return
     if args.cmd == "record":
         content = None
         if args.content_file:
@@ -376,10 +438,12 @@ def _cli() -> None:
                 content = f.read()
         payload = json.loads(args.payload) if args.payload else None
         e = record(args.ledger, agent=args.agent, action=args.action,
-                   target=args.target, payload=payload, content=content)
+                   target=args.target, payload=payload, content=content,
+                   sign_key=args.sign)
         print(f"🪪 Sealed: {e['agent']} {e['action']}"
               + (f" → {e['target']}" if "target" in e else "")
-              + f"  seal={e['seal']}")
+              + f"  seal={e['seal']}"
+              + ("  🔑signed" if "sig" in e else ""))
     elif args.cmd == "history":
         for e in history(args.ledger, agent=args.agent,
                          action=args.action, target=args.target):

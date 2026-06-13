@@ -129,8 +129,35 @@ am cross seara.jsonl jebi.jsonl --names seara jebi         # 상호 핀
 | `cross_witness` | tuple | 두 원장 상호 핀 |
 | `family_round` | list | 전원이 전원을 핀 |
 | `family_verify` | [Finding] | 가족 전체 검증 |
+| `verify_signatures` | [Finding] | 선택적 서명-신원 레이어 검증 |
 
 각 함수의 시그니처·판정은 **[완전 가이드](docs/GUIDE_KO.md)** 참조.
+
+---
+
+## 서명 신원 (선택) — *누구*를 *무엇*만큼 단단하게
+
+기본적으로 `agent` 필드는 **자기선언 라벨**입니다: 체인은 *엔트리*가 안 바뀌었음을 증명할 뿐,
+명시된 에이전트가 *실제 행위자*임은 증명 못 합니다. 선택적 `[signing]` extra가 Ed25519 키쌍으로
+*누구*를 검증 가능한 신원으로 올립니다:
+
+```bash
+pip install action-mirror[signing]
+
+am keygen --out jebi.key                                   # 에이전트당 키쌍 하나
+am record --agent jebi --action eval --target exp1 --sign jebi.key
+am verify-sig                                              # 모든 서명 엔트리 검증
+```
+
+서명 엔트리는 `pubkey`(체인됨 — 주장한 키를 체인 안 깨고 못 바꿈)와 seal에 대한 `sig`를 답니다.
+`verify_signatures`(CLI `verify-sig`)는 *내용에서 seal을 재계산*해 서명을 검증하므로, **사칭**(틀린
+키로 서명)과 **내용 위조**(서명 후 본문 변경)를 *둘 다* 잡습니다.
+
+**정직한 범위 — 안 팔기.** 서명은 *이 키 보유자가 서명했다*(귀속·사칭저항·부인불가)를 증명합니다.
+**독립은 증명 못 합니다**: 한 운영자가 키를 여럿 발급(Sybil)할 수 있고, 자기 키를 든 에이전트는
+다른 키를 쓸 수도 있어 — 가장 강한 형태는 *하네스*가 신원을 attest해야 합니다. 키는 *동일 신원*을
+증명할 뿐, 서로 다른 키를 *독립*으로 만들지 못합니다. 무서명 엔트리도 완전 유효(코어는 무의존 유지);
+서명은 강제가 아닌 선택 레이어입니다.
 
 ---
 

@@ -189,6 +189,21 @@ mutual tamper-evidence. Wire both up deliberately, not by default.
 | `cross_witness` | tuple | mutual pin between two ledgers |
 | `family_round` | list | every agent pins every other |
 | `family_verify` | [Finding] | verify the whole family |
+| `verify_signatures` | [Finding] | verify the optional signed-identity layer |
+
+---
+
+### `verify_signatures(ledger) → [Finding]`
+
+Verifies the optional Ed25519 signed-identity layer (`[signing]` extra). Entries created with
+`record(..., sign_key=...)` carry a chained `pubkey` and a `sig` over the (recomputed) seal.
+`verify_signatures` confirms each signature — catching both impersonation (wrong key) and
+tampering (body changed after signing). Entries with no `pubkey` are unsigned and pass as OK (the
+`who` is self-asserted). **Attribution only — not independence**: one operator can hold many keys.
+
+```python
+am.report("identity", am.verify_signatures("jebi.jsonl"))
+```
 
 ---
 

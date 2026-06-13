@@ -185,6 +185,20 @@ cron/loop가 `family_round()`를 돌리면 가족 전체에 상시 상호 변조
 | `cross_witness` | tuple | 두 원장 상호 핀 |
 | `family_round` | list | 전원이 전원을 핀 |
 | `family_verify` | [Finding] | 가족 전체 검증 |
+| `verify_signatures` | [Finding] | 선택적 서명-신원 레이어 검증 |
+
+---
+
+### `verify_signatures(ledger) → [Finding]`
+
+선택적 Ed25519 서명-신원 레이어(`[signing]` extra)를 검증한다. `record(..., sign_key=...)`로 만든
+엔트리는 체인된 `pubkey`와 (재계산한) seal에 대한 `sig`를 단다. `verify_signatures`는 각 서명을
+확인 — 사칭(틀린 키)과 위조(서명 후 본문 변경)를 둘 다 잡는다. `pubkey` 없는 엔트리는 무서명이라
+OK 통과(`누구`는 자기선언). **귀속만 — 독립 아님**: 한 운영자가 키를 여럿 들 수 있다.
+
+```python
+am.report("identity", am.verify_signatures("jebi.jsonl"))
+```
 
 ---
 

@@ -143,8 +143,37 @@ Demo (3-agent family, attack included): `PYTHONPATH=. python examples/demo_famil
 | `cross_witness` | tuple | mutual pin between two ledgers |
 | `family_round` | list | every agent pins every other |
 | `family_verify` | [Finding] | verify the whole family |
+| `verify_signatures` | [Finding] | verify the optional signed-identity layer |
 
 See the **[full Guide](docs/GUIDE.md)** for each function's signature and verdicts.
+
+---
+
+## Signed identity (optional) — making the *who* as hard as the *what*
+
+By default the `agent` field is a **self-asserted label**: the chain proves the *entry* wasn't
+altered, not that the named agent is who acted. The optional `[signing]` extra upgrades the *who*
+to a verifiable identity with an Ed25519 keypair:
+
+```bash
+pip install action-mirror[signing]
+
+am keygen --out jebi.key                                   # one keypair per agent
+am record --agent jebi --action eval --target exp1 --sign jebi.key
+am verify-sig                                              # checks every signed entry
+```
+
+Each signed entry carries a `pubkey` (chained — the claimed key can't be swapped without breaking
+the chain) and a `sig` over its seal. `verify_signatures` (CLI `verify-sig`) recomputes the seal
+from the content and checks the signature, so it catches **both** impersonation (signed with the
+wrong key) **and** tampering (body changed after signing).
+
+**Honest scope — do not oversell.** A signature proves *the holder of this key signed it*
+(attribution · impersonation-resistance · non-repudiation). It does **not** prove independence:
+one operator can mint many keys (Sybil), and an agent holding its own key can use a different one
+— the strongest form needs the *harness* to attest identity. Keys make *same-identity* provable;
+they do not make distinct keys *independent*. Unsigned entries remain fully valid (the core stays
+zero-dependency); signing is an opt-in layer, not a requirement.
 
 ---
 

@@ -232,3 +232,30 @@ def test_determinism_same_inputs(tmp_path):
     e1 = am.record(l1, agent="a", action="w", content=b"identical bytes")
     e2 = am.record(l2, agent="a", action="w", content=b"identical bytes")
     assert e1["content_hash"] == e2["content_hash"]
+
+
+# ── signed-identity layer (optional [signing] extra) ──────────────────────────
+def test_verify_signatures_unsigned_ok(tmp_path):
+    """Unsigned entries: the 'who' is self-asserted — verify_signatures passes as OK."""
+    l = L(tmp_path)
+    am.record(l, agent="jebi", action="x")
+    fs = am.verify_signatures(l)
+    assert fs[0].level == "OK"
+
+
+def test_verify_signatures_signed_and_forgery(tmp_path):
+    """Signed entry verifies; impersonation (wrong key) and tampering are both caught."""
+    from actmirror import identity
+    if not identity.available():
+        import pytest
+        pytest.skip("signing extra not installed")
+    l = L(tmp_path)
+    keyfile = str(tmp_path / "jebi.key")
+    identity.generate(keyfile)
+    am.record(l, agent="jebi", action="eval", target="exp1", sign_key=keyfile)
+    assert am.verify_signatures(l)[0].level == "OK"
+    # tamper the signed entry's agent → signature must no longer verify
+    rows = [json.loads(x) for x in open(l)]
+    rows[0]["agent"] = "mallory"
+    open(l, "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+    assert am.verify_signatures(l)[0].level == "FAIL"
