@@ -30,6 +30,13 @@ question becomes: **which agent did what, and can you prove it?**
 
 Action Mirror answers with two mechanisms on one chain-hashed ledger:
 
+> **It *records*, it does not *intercept*.** `am.record(...)` is a call the agent (or you)
+> makes — Action Mirror does **not** auto-hook, proxy, or intercept an agent's actions, and an
+> agent that never calls it leaves no trace (that absence is itself the signal). Automatic
+> interception lives at a different layer (a harness hook / wrapper) and is out of scope here.
+> The guarantee is not "every action is captured" — it is "what *is* recorded cannot be altered
+> or replaced without detection."
+
 ### A. Action provenance
 
 Every action is sealed into an append-only chain. Content is recorded as a
