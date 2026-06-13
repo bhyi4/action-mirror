@@ -1,0 +1,415 @@
+"""
+🪪 Action Mirror — agent action provenance ledger + mutual witness network.
+
+Third member of the mirror family:
+  measure-mirror     audits "AI evaluation claims"   (is the CLAIM honest?)
+  provenance-mirror  audits "content authenticity"   (is the ORIGIN proven?)
+  action-mirror      audits "agent behaviour"        (WHO DID WHAT, provably?)
+
+Two capabilities, one ledger format:
+
+A. ACTION PROVENANCE — every agent action (tool call, file write, commit,
+   ticket, message) is appended to a chain-hashed ledger. Content is recorded
+   as a SHA-256 hash only (privacy + size). attest() later answers
+   "did agent X really do Y to Z?" — and catches content modified afterwards.
+
+B. MUTUAL WITNESS — agents periodically seal each other's ledger head
+   (entry_count + head_seal) into their own ledger. A chain hash alone cannot
+   detect *complete ledger replacement* (measure-mirror's documented gap);
+   position-pinned cross-witness records can: if a peer ledger is truncated
+   or rewritten, the historical head no longer matches at its pinned position.
+   To erase one agent's history, an attacker must rewrite EVERY family
+   member's ledger simultaneously.
+
+Honest threat model (read this before trusting it):
+  - This provides tamper-EVIDENCE within a family of agents whose ledgers
+    live in separate trust domains (different processes/users/machines).
+  - A host-level attacker (root on the single machine holding all ledgers)
+    can rewrite everything consistently. This tool does not stop that;
+    nothing local-only can.
+  - Timestamps come from the local clock — sealed order is trustworthy,
+    wall-clock time is not proof.
+  - The ledger stores hashes of content, not content. attest() with content
+    verification needs the actual bytes presented again.
+
+Zero dependencies (stdlib only). Deterministic. Same DNA as measure-mirror.
+"""
+from __future__ import annotations
+import hashlib, json, os, time
+from dataclasses import dataclass
+
+
+# ─────────────────────────────────────────────────────────────
+# Result type (family-standard)
+# ─────────────────────────────────────────────────────────────
+@dataclass
+class Finding:
+    probe: str
+    level: str   # OK / WARN / FAIL
+    msg: str
+
+
+# ─────────────────────────────────────────────────────────────
+# Ledger primitives (chain-hashed, ported from measure-mirror)
+# ─────────────────────────────────────────────────────────────
+def _load_entries(ledger_path: str) -> list[dict]:
+    """Parse all non-empty lines. Corrupt lines become {'_corrupt': ...} so
+    position semantics stay stable and chain verification fails loudly."""
+    if not os.path.exists(ledger_path):
+        return []
+    out: list[dict] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                out.append({"_corrupt": line[:80]})
+    return out
+
+
+def _get_last_seal(ledger_path: str) -> str:
+    entries = _load_entries(ledger_path)
+    for e in reversed(entries):
+        if "seal" in e:
+            return e["seal"]
+    return "GENESIS"
+
+
+def _seal(ledger_path: str, entry: dict) -> dict:
+    entry["prev_seal"] = _get_last_seal(ledger_path)
+    entry["seal"] = hashlib.sha256(
+        json.dumps(entry, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:16]
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return entry
+
+
+def _content_hash(content) -> str:
+    b = content.encode("utf-8") if isinstance(content, str) else content
+    return hashlib.sha256(b).hexdigest()[:16]
+
+
+def verify_chain(ledger_path: str) -> list[Finding]:
+    """Full chain verification: every seal recomputes, every link connects."""
+    entries = _load_entries(ledger_path)
+    if not entries:
+        return [Finding("⛓ chain", "OK", "Ledger empty — nothing to verify.")]
+    prev = "GENESIS"
+    for i, e in enumerate(entries, 1):
+        if "_corrupt" in e:
+            return [Finding("⛓ chain", "FAIL",
+                            f"Entry {i} is not valid JSON — ledger corrupted.")]
+        if e.get("prev_seal") != prev:
+            return [Finding("⛓ chain", "FAIL",
+                            f"Entry {i}: prev_seal broken — "
+                            "deletion/insertion/reorder detected.")]
+        body = {k: v for k, v in e.items() if k != "seal"}
+        expect = hashlib.sha256(
+            json.dumps(body, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()[:16]
+        if e.get("seal") != expect:
+            return [Finding("⛓ chain", "FAIL",
+                            f"Entry {i}: seal mismatch — content modified.")]
+        prev = e["seal"]
+    return [Finding("⛓ chain", "OK",
+                    f"Chain intact — {len(entries)} entries verified.")]
+
+
+# ─────────────────────────────────────────────────────────────
+# A. Action provenance
+# ─────────────────────────────────────────────────────────────
+def record(ledger_path: str, *, agent: str, action: str,
+           target: str | None = None, payload: dict | None = None,
+           content=None) -> dict:
+    """Record one agent action as a chain-sealed ledger entry.
+
+    Args:
+        agent:   who acted (e.g. "jebi", "seara", "sonnet")
+        action:  what kind (free-form: "tool_call", "file_write", "commit",
+                 "ticket", "msg", ...)
+        target:  what it acted on (path, ticket id, claim_id, ...)
+        payload: small JSON-serializable metadata (args summary, exit code...)
+        content: bytes/str of the produced artifact — only its SHA-256 is
+                 stored (privacy + size), enabling later attest(content=...).
+    """
+    entry: dict = {
+        "_type":  "action",
+        "ts":     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "agent":  agent,
+        "action": action,
+    }
+    if target is not None:
+        entry["target"] = target
+    if content is not None:
+        entry["content_hash"] = _content_hash(content)
+    if payload is not None:
+        entry["payload"] = payload
+    return _seal(ledger_path, entry)
+
+
+def history(ledger_path: str, *, agent: str | None = None,
+            action: str | None = None, target: str | None = None) -> list[dict]:
+    """Query recorded actions with optional filters."""
+    out = []
+    for e in _load_entries(ledger_path):
+        if e.get("_type") != "action":
+            continue
+        if agent is not None and e.get("agent") != agent:
+            continue
+        if action is not None and e.get("action") != action:
+            continue
+        if target is not None and e.get("target") != target:
+            continue
+        out.append(e)
+    return out
+
+
+def attest(ledger_path: str, *, agent: str | None = None,
+           action: str | None = None, target: str | None = None,
+           content=None) -> dict:
+    """Answer "did this happen?" from the sealed ledger.
+
+    Verdicts:
+      ATTESTED         — matching sealed record(s) found
+                         (and content hash matches, when content is given)
+      CONTENT-MISMATCH — the action is recorded, but the presented content's
+                         hash differs from what was sealed → the artifact was
+                         modified after the recorded action
+      NOT-FOUND        — no sealed record matches (absence of record is not
+                         proof the event never happened — only that this
+                         ledger never sealed it)
+    """
+    matches = history(ledger_path, agent=agent, action=action, target=target)
+    if not matches:
+        return {"verdict": "NOT-FOUND", "matches": [],
+                "note": "No sealed record matches. Absence of record ≠ proof of absence."}
+    if content is None:
+        return {"verdict": "ATTESTED", "matches": matches,
+                "note": f"{len(matches)} sealed record(s) match."}
+    h = _content_hash(content)
+    hash_hits = [e for e in matches if e.get("content_hash") == h]
+    if hash_hits:
+        return {"verdict": "ATTESTED", "matches": hash_hits,
+                "note": f"{len(hash_hits)} sealed record(s) match, content hash verified ({h})."}
+    return {"verdict": "CONTENT-MISMATCH", "matches": matches,
+            "note": "Action is recorded but the presented content's hash "
+                    f"({h}) differs from the sealed hash — artifact was "
+                    "modified after recording."}
+
+
+# ─────────────────────────────────────────────────────────────
+# B. Mutual witness network
+# ─────────────────────────────────────────────────────────────
+def witness_peer(my_ledger: str, peer_ledger: str, *, peer_name: str) -> dict:
+    """Seal the peer ledger's current head (position-pinned) into MY ledger.
+
+    Records (peer_entries, peer_head_seal): "at this moment, peer's ledger had
+    N entries and entry N's seal was X". Appends by the peer later are fine;
+    truncation or rewriting of entry ≤ N is permanently detectable.
+    """
+    peer_entries = _load_entries(peer_ledger)
+    n = len(peer_entries)
+    head = peer_entries[-1].get("seal", "INVALID") if n else "GENESIS"
+    anchor = "empty"
+    if os.path.exists(peer_ledger):
+        with open(peer_ledger, "rb") as f:
+            anchor = hashlib.sha256(f.read()).hexdigest()[:16]
+    entry = {
+        "_type":          "peer_witness",
+        "ts":             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "peer":           peer_name,
+        "peer_entries":   n,
+        "peer_head_seal": head,
+        "peer_anchor":    anchor,   # forensic only — appends legitimately change it
+    }
+    return _seal(my_ledger, entry)
+
+
+def verify_peer(my_ledger: str, peer_ledger: str, *, peer_name: str) -> Finding:
+    """Check the peer's ledger against every witness record I hold.
+
+    For each witness record (n, head_seal): the peer ledger must still have
+    ≥ n entries AND entry n's seal must equal head_seal. Append-only history
+    passes; truncation/rewrite/replacement fails.
+
+    Levels:
+      FAIL — at least one pinned head no longer matches (ROLLBACK/REWRITE)
+      WARN — I hold no witness records for this peer (can't say anything)
+      OK   — every pinned head still present at its position
+    """
+    wits = [e for e in _load_entries(my_ledger)
+            if e.get("_type") == "peer_witness" and e.get("peer") == peer_name]
+    if not wits:
+        return Finding("👁 peer-witness", "WARN",
+                       f"No witness records for peer '{peer_name}' — "
+                       "nothing to verify against.")
+    peer_now = _load_entries(peer_ledger)
+    problems: list[str] = []
+    for w in wits:
+        n = w.get("peer_entries", 0)
+        if n == 0:
+            continue   # witnessed an empty ledger — pins nothing
+        if len(peer_now) < n:
+            problems.append(
+                f"TRUNCATED: witnessed {n} entries at {w['ts']}, now only {len(peer_now)}")
+        elif peer_now[n - 1].get("seal") != w.get("peer_head_seal"):
+            problems.append(
+                f"REWRITTEN: entry {n} seal ≠ head witnessed at {w['ts']} "
+                f"({peer_now[n-1].get('seal')} ≠ {w.get('peer_head_seal')})")
+    if problems:
+        return Finding("👁 peer-witness", "FAIL",
+                       f"Peer '{peer_name}' ledger ROLLBACK detected: "
+                       + "; ".join(problems) + ".")
+    pinned = sum(1 for w in wits if w.get("peer_entries", 0) > 0)
+    return Finding("👁 peer-witness", "OK",
+                   f"Peer '{peer_name}': {pinned} pinned head(s) all consistent "
+                   "— append-only history respected.")
+
+
+def cross_witness(ledger_a: str, ledger_b: str, *,
+                  name_a: str, name_b: str) -> tuple[dict, dict]:
+    """Mutual witness in both directions: A pins B's head, then B pins A's
+    (B's record includes A's fresh witness entry — deliberate interlock)."""
+    wa = witness_peer(ledger_a, ledger_b, peer_name=name_b)
+    wb = witness_peer(ledger_b, ledger_a, peer_name=name_a)
+    return wa, wb
+
+
+def family_round(ledgers: dict[str, str]) -> list[dict]:
+    """One witness round over a family: every agent pins every other agent.
+
+    Args:
+        ledgers: {agent_name: ledger_path}
+    Returns the witness entries created (n·(n-1) of them).
+    """
+    out: list[dict] = []
+    names = sorted(ledgers)
+    for me in names:
+        for peer in names:
+            if me == peer:
+                continue
+            out.append(witness_peer(ledgers[me], ledgers[peer], peer_name=peer))
+    return out
+
+
+def family_verify(ledgers: dict[str, str]) -> list[Finding]:
+    """Verify every pair in the family. One Finding per (observer → peer)."""
+    findings: list[Finding] = []
+    names = sorted(ledgers)
+    for me in names:
+        for peer in names:
+            if me == peer:
+                continue
+            f = verify_peer(ledgers[me], ledgers[peer], peer_name=peer)
+            findings.append(Finding(f"👁 {me}→{peer}", f.level, f.msg))
+    return findings
+
+
+# ─────────────────────────────────────────────────────────────
+# Report printer (family-standard)
+# ─────────────────────────────────────────────────────────────
+def report(title: str, findings: list[Finding]) -> None:
+    icon = {"OK": "✅", "WARN": "⚠️ ", "FAIL": "🔴"}
+    worst = "FAIL" if any(f.level == "FAIL" for f in findings) else \
+            "WARN" if any(f.level == "WARN" for f in findings) else "OK"
+    print(f"\n🪪 Action Mirror: {title}")
+    print(f"   Overall: {icon[worst]} {worst}")
+    for f in findings:
+        print(f"   {icon[f.level]} [{f.probe}] {f.msg}")
+
+
+# ─────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────
+def _cli() -> None:
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="am", description="🪪 Action Mirror — agent action provenance + mutual witness")
+    p.add_argument("--ledger", default=os.environ.get("AM_LEDGER", "am_ledger.jsonl"),
+                   help="Ledger path (default: $AM_LEDGER or ./am_ledger.jsonl)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    r = sub.add_parser("record", help="Seal one agent action")
+    r.add_argument("--agent", required=True)
+    r.add_argument("--action", required=True)
+    r.add_argument("--target", default=None)
+    r.add_argument("--payload", default=None, help="JSON string of metadata")
+    r.add_argument("--content-file", default=None,
+                   help="File whose SHA-256 to seal as content_hash")
+
+    h = sub.add_parser("history", help="Query sealed actions")
+    h.add_argument("--agent", default=None)
+    h.add_argument("--action", default=None)
+    h.add_argument("--target", default=None)
+
+    a = sub.add_parser("attest", help='Prove "did agent X do Y to Z?"')
+    a.add_argument("--agent", default=None)
+    a.add_argument("--action", default=None)
+    a.add_argument("--target", default=None)
+    a.add_argument("--content-file", default=None,
+                   help="Verify this file's bytes against the sealed hash")
+
+    sub.add_parser("verify", help="Verify my ledger's chain integrity")
+
+    w = sub.add_parser("witness", help="Pin a peer ledger's head into my ledger")
+    w.add_argument("peer_ledger")
+    w.add_argument("--name", required=True, help="Peer agent name")
+
+    vp = sub.add_parser("verify-peer", help="Check a peer ledger against my witness records")
+    vp.add_argument("peer_ledger")
+    vp.add_argument("--name", required=True)
+
+    cr = sub.add_parser("cross", help="Mutual witness between two ledgers")
+    cr.add_argument("ledger_a")
+    cr.add_argument("ledger_b")
+    cr.add_argument("--names", nargs=2, required=True, metavar=("NAME_A", "NAME_B"))
+
+    args = p.parse_args()
+    if args.cmd == "record":
+        content = None
+        if args.content_file:
+            with open(args.content_file, "rb") as f:
+                content = f.read()
+        payload = json.loads(args.payload) if args.payload else None
+        e = record(args.ledger, agent=args.agent, action=args.action,
+                   target=args.target, payload=payload, content=content)
+        print(f"🪪 Sealed: {e['agent']} {e['action']}"
+              + (f" → {e['target']}" if "target" in e else "")
+              + f"  seal={e['seal']}")
+    elif args.cmd == "history":
+        for e in history(args.ledger, agent=args.agent,
+                         action=args.action, target=args.target):
+            print(f"  {e['ts']}  {e['agent']:<8} {e['action']:<12} "
+                  f"{e.get('target','-'):<30} seal={e['seal']}")
+    elif args.cmd == "attest":
+        content = None
+        if args.content_file:
+            with open(args.content_file, "rb") as f:
+                content = f.read()
+        res = attest(args.ledger, agent=args.agent, action=args.action,
+                     target=args.target, content=content)
+        icon = {"ATTESTED": "✅", "CONTENT-MISMATCH": "🔴", "NOT-FOUND": "⚪"}
+        print(f"{icon[res['verdict']]} {res['verdict']}: {res['note']}")
+        for e in res["matches"]:
+            print(f"   {e['ts']}  {e['agent']} {e['action']} seal={e['seal']}")
+    elif args.cmd == "verify":
+        report("chain integrity", verify_chain(args.ledger))
+    elif args.cmd == "witness":
+        e = witness_peer(args.ledger, args.peer_ledger, peer_name=args.name)
+        print(f"👁 Witnessed '{args.name}': {e['peer_entries']} entries, "
+              f"head={e['peer_head_seal']}  seal={e['seal']}")
+    elif args.cmd == "verify-peer":
+        report(f"peer '{args.name}'",
+               [verify_peer(args.ledger, args.peer_ledger, peer_name=args.name)])
+    elif args.cmd == "cross":
+        na, nb = args.names
+        cross_witness(args.ledger_a, args.ledger_b, name_a=na, name_b=nb)
+        print(f"👁👁 Mutual witness sealed: {na} ⇄ {nb}")
+
+
+if __name__ == "__main__":
+    _cli()
