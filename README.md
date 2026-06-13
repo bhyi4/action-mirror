@@ -1,5 +1,7 @@
 # 🪪 Action Mirror
 
+<img src="docs/action_mirror_og.png" alt="Action Mirror" width="500">
+
 **Agent action provenance + mutual witness network.**
 Third member of the mirror family — same DNA, new domain:
 
