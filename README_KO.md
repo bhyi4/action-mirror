@@ -1,6 +1,8 @@
 # 🪪 Action Mirror (행동거울)
 
-<img src="docs/action_mirror_og.png" alt="Action Mirror" width="500">
+<p align="center">
+  <img src="docs/action_mirror_og.png" alt="Action Mirror" width="500">
+</p>
 
 **에이전트 행동 원장 + 상호증인 네트워크.**
 거울 패밀리 3호 — 같은 DNA, 새 도메인:
