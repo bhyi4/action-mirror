@@ -16,6 +16,8 @@
 
 넷을 합치면 = 🪞🔎🪪 [미러스택](https://github.com/bhyi4/measure-mirror/tree/main/stack).
 
+💬 **[Discussions](https://github.com/orgs/mirror-stack/discussions)** — 질문 · 아이디어 · 독립 재현 공유 환영.
+
 > 훈련 불요 · 결정론적 · 외부 의존성 없음 (Python 3.10+ stdlib만).
 
 **[📖 완전 가이드 →](docs/GUIDE_KO.md)** · [English README](README.md)
